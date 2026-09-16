@@ -1,0 +1,93 @@
+<div class="compressor_settings" id="compressor_settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>Chat Compressor</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <p class="margin0">
+                Slash command: <code>/compress</code> — summarize the chat into a chronology
+                (editable popup), optionally refresh user facts, then start a new chat
+                (greeting + chronology).
+            </p>
+
+            <div class="compressor_actions">
+                <div id="compressor_run_btn" class="menu_button menu_button_icon">
+                    <i class="fa-solid fa-compress"></i>
+                    <span>Compress now</span>
+                </div>
+            </div>
+
+            <h4 class="compressor_section_title">Options</h4>
+            <label class="checkbox_label" for="compressor_facts_enabled">
+                <input id="compressor_facts_enabled" type="checkbox" />
+                <span>Generate &amp; inject user facts (optional)</span>
+            </label>
+            <label class="checkbox_label" for="compressor_skip_system">
+                <input id="compressor_skip_system" type="checkbox" />
+                <span>Skip system messages in transcript</span>
+            </label>
+
+            <div class="compressor_row">
+                <label for="compressor_response_length">
+                    Summary response length (0 = default)
+                </label>
+                <input id="compressor_response_length" type="number" min="0" max="4096" step="16" />
+            </div>
+
+            <h4 class="compressor_section_title">Summary generation prompt</h4>
+            <p class="margin0 compressor_hint">
+                Prompt sent to the model. Placeholders:
+                <code>{{transcript}}</code> / <code>{transcript}</code>
+            </p>
+            <textarea id="compressor_chrono_prompt" class="text_pole compressor_prompt_field"></textarea>
+
+            <h4 class="compressor_section_title">Chronology injection template</h4>
+            <p class="margin0 compressor_hint">
+                Message text inserted after the greeting. Placeholders:
+                <code>{{summary}}</code> / <code>{summary}</code>
+            </p>
+            <textarea id="compressor_chrono_template" class="text_pole" rows="3"></textarea>
+
+            <div id="compressor_facts_block" class="compressor_facts_block">
+                <h4 class="compressor_section_title">Facts options</h4>
+                <div class="compressor_row">
+                    <label for="compressor_facts_depth">Facts injection depth</label>
+                    <input id="compressor_facts_depth" type="number" min="0" max="100" step="1" />
+                </div>
+
+                <div class="compressor_row">
+                    <label for="compressor_facts_position">Facts position</label>
+                    <select id="compressor_facts_position">
+                        <option value="2">Before prompt</option>
+                        <option value="0">In prompt</option>
+                        <option value="1">In chat</option>
+                    </select>
+                </div>
+
+                <h4 class="compressor_section_title">Facts generation prompt</h4>
+                <textarea id="compressor_facts_prompt" class="text_pole compressor_prompt_field"></textarea>
+
+                <h4 class="compressor_section_title">Facts injection template</h4>
+                <p class="margin0 compressor_hint">
+                    Placeholders: <code>{{facts}}</code> / <code>{facts}</code>
+                </p>
+                <textarea id="compressor_facts_template" class="text_pole" rows="2"></textarea>
+
+                <h4 class="compressor_section_title">User facts (current character)</h4>
+                <p class="margin0">One fact per line. Stored in <code>user/files/compressor-facts-*.json</code>.</p>
+                <textarea id="compressor_facts_editor" class="text_pole compressor_facts_editor"></textarea>
+                <div class="compressor_actions">
+                    <div id="compressor_facts_reload_btn" class="menu_button menu_button_icon">
+                        <i class="fa-solid fa-rotate"></i>
+                        <span>Reload</span>
+                    </div>
+                    <div id="compressor_facts_save_btn" class="menu_button menu_button_icon">
+                        <i class="fa-solid fa-floppy-disk"></i>
+                        <span>Save facts</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

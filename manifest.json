@@ -1,0 +1,17 @@
+{
+    "display_name": "Chat Compressor",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "dependencies": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "compressor",
+    "version": "1.0.0",
+    "homePage": "",
+    "auto_update": false,
+    "minimum_client_version": "1.12.0",
+    "hooks": {
+        "activate": "init"
+    }
+}
