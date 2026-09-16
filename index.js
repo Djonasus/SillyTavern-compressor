@@ -62,10 +62,24 @@ const GENERATION_MODES = {
     RAW: 'raw',
 };
 
+/** Where to place the summary instruction relative to the transcript */
+const INSTRUCTION_POSITIONS = {
+    /** ST system role / systemPrompt — before transcript */
+    SYSTEM: 'system',
+    /** Inline at the very start of the prompt body */
+    START: 'start',
+    /** After the full transcript */
+    END: 'end',
+    /** After N transcript message blocks */
+    AFTER_MESSAGES: 'after_messages',
+};
+
 const defaultSettings = {
     factsEnabled: false,
     skipSystemMessages: true,
     generationMode: GENERATION_MODES.RAW,
+    instructionPosition: INSTRUCTION_POSITIONS.SYSTEM,
+    instructionDepth: 0,
     responseLength: 0,
     factsDepth: 0,
     factsPosition: EXTENSION_PROMPT_TYPES.BEFORE_PROMPT,
@@ -139,6 +153,20 @@ function updateFactsUiVisibility() {
         return;
     }
     root.toggleClass('compressor_facts_off', !settings().factsEnabled);
+}
+
+function updateInstructionDepthVisibility() {
+    const root = $('#compressor_settings');
+    if (!root.length) {
+        return;
+    }
+    const showDepth = settings().instructionPosition === INSTRUCTION_POSITIONS.AFTER_MESSAGES;
+    root.toggleClass('compressor_depth_off', !showDepth);
+}
+
+function normalizeInstructionPosition(value) {
+    const allowed = Object.values(INSTRUCTION_POSITIONS);
+    return allowed.includes(value) ? value : INSTRUCTION_POSITIONS.SYSTEM;
 }
 
 function delay(ms) {
@@ -377,10 +405,10 @@ function parseFactsFromModel(raw) {
 }
 
 /**
- * Split a templated prompt into system instruction + transcript body for Raw mode.
+ * Split a templated prompt into instruction + transcript blocks.
  * @param {string} promptTemplate
  * @param {string} transcript
- * @returns {{ systemPrompt: string, prompt: string, classicPrompt: string }}
+ * @returns {{ instruction: string, blocks: string[], classicPrompt: string }}
  */
 function buildGenerationPrompts(promptTemplate, transcript) {
     const template = promptTemplate || '';
@@ -392,22 +420,77 @@ function buildGenerationPrompts(promptTemplate, transcript) {
         return prompt;
     })();
 
-    let systemPrompt = template
+    let instruction = template
         .replaceAll('{{transcript}}', '')
         .replaceAll('{transcript}', '')
         .replace(/\n*Chat transcript:\s*$/i, '')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 
-    systemPrompt = applyTemplate(systemPrompt || template, {});
-    if (!systemPrompt.trim()) {
-        systemPrompt = 'Summarize the chat transcript. Output only the summary.';
+    instruction = applyTemplate(instruction || template, {});
+    if (!instruction.trim()) {
+        instruction = 'Summarize the chat transcript. Output only the summary.';
     }
 
+    const blocks = String(transcript || '')
+        .split(/\n\n+/)
+        .map(b => b.trim())
+        .filter(Boolean);
+
     return {
-        systemPrompt,
-        prompt: transcript,
+        instruction,
+        blocks,
         classicPrompt,
+    };
+}
+
+/**
+ * Place the summary instruction relative to transcript blocks.
+ * @param {string} instruction
+ * @param {string[]} blocks
+ * @returns {{ systemPrompt: string, prompt: string | object[] }}
+ */
+function placeInstruction(instruction, blocks) {
+    const s = settings();
+    const position = s.instructionPosition || INSTRUCTION_POSITIONS.SYSTEM;
+    const depth = Math.max(0, Number(s.instructionDepth) || 0);
+    const transcriptText = blocks.join('\n\n');
+
+    if (position === INSTRUCTION_POSITIONS.END) {
+        return {
+            systemPrompt: '',
+            prompt: transcriptText
+                ? `${transcriptText}\n\n${instruction}`
+                : instruction,
+        };
+    }
+
+    if (position === INSTRUCTION_POSITIONS.START) {
+        return {
+            systemPrompt: '',
+            prompt: transcriptText
+                ? `${instruction}\n\n${transcriptText}`
+                : instruction,
+        };
+    }
+
+    if (position === INSTRUCTION_POSITIONS.AFTER_MESSAGES) {
+        const n = Math.min(depth, blocks.length);
+        const merged = [
+            ...blocks.slice(0, n),
+            instruction,
+            ...blocks.slice(n),
+        ].join('\n\n');
+        return {
+            systemPrompt: '',
+            prompt: merged || instruction,
+        };
+    }
+
+    // SYSTEM (default): instruction as systemPrompt, transcript as user content
+    return {
+        systemPrompt: instruction,
+        prompt: transcriptText || '(empty transcript)',
     };
 }
 
@@ -422,15 +505,16 @@ async function generateText(promptTemplate, transcript, responseLength = 0) {
     const mode = settings().generationMode === GENERATION_MODES.CLASSIC
         ? GENERATION_MODES.CLASSIC
         : GENERATION_MODES.RAW;
-    const { systemPrompt, prompt, classicPrompt } = buildGenerationPrompts(promptTemplate, transcript);
+    const { instruction, blocks, classicPrompt } = buildGenerationPrompts(promptTemplate, transcript);
+    const placed = placeInstruction(instruction, blocks);
 
     if (mode === GENERATION_MODES.RAW) {
         if (typeof context.generateRaw !== 'function') {
             toastr.warning('generateRaw unavailable; falling back to Classic');
         } else {
             const params = {
-                prompt,
-                systemPrompt,
+                prompt: placed.prompt,
+                systemPrompt: placed.systemPrompt,
                 quietToLoud: false,
             };
             if (responseLength > 0) {
@@ -441,8 +525,13 @@ async function generateText(promptTemplate, transcript, responseLength = 0) {
         }
     }
 
+    // Classic: rebuild quiet prompt with the same placement rules
+    const classicPlaced = placed.systemPrompt
+        ? `${placed.systemPrompt}\n\n${typeof placed.prompt === 'string' ? placed.prompt : classicPrompt}`
+        : (typeof placed.prompt === 'string' ? placed.prompt : classicPrompt);
+
     const params = {
-        quietPrompt: classicPrompt,
+        quietPrompt: classicPlaced,
         skipWIAN: true,
         removeReasoning: true,
     };
@@ -709,6 +798,8 @@ function bindSettingsUi() {
     $('#compressor_generation_mode').val(
         s.generationMode === GENERATION_MODES.CLASSIC ? GENERATION_MODES.CLASSIC : GENERATION_MODES.RAW,
     );
+    $('#compressor_instruction_position').val(normalizeInstructionPosition(s.instructionPosition));
+    $('#compressor_instruction_depth').val(Number(s.instructionDepth) || 0);
     $('#compressor_facts_depth').val(Number(s.factsDepth) || 0);
     $('#compressor_facts_position').val(String(s.factsPosition ?? EXTENSION_PROMPT_TYPES.BEFORE_PROMPT));
     $('#compressor_chrono_template').val(s.chronologyTemplate || DEFAULT_CHRONOLOGY_TEMPLATE);
@@ -716,6 +807,7 @@ function bindSettingsUi() {
     $('#compressor_facts_prompt').val(s.factsPrompt || DEFAULT_FACTS_PROMPT);
     $('#compressor_facts_template').val(s.factsTemplate || DEFAULT_FACTS_TEMPLATE);
     updateFactsUiVisibility();
+    updateInstructionDepthVisibility();
 
     const persist = () => saveSettingsDebounced();
 
@@ -740,6 +832,17 @@ function bindSettingsUi() {
         s.generationMode = String($(this).val()) === GENERATION_MODES.CLASSIC
             ? GENERATION_MODES.CLASSIC
             : GENERATION_MODES.RAW;
+        persist();
+    });
+
+    $('#compressor_instruction_position').off('change').on('change', function () {
+        s.instructionPosition = normalizeInstructionPosition(String($(this).val()));
+        persist();
+        updateInstructionDepthVisibility();
+    });
+
+    $('#compressor_instruction_depth').off('input').on('input', function () {
+        s.instructionDepth = Math.max(0, Number($(this).val()) || 0);
         persist();
     });
 

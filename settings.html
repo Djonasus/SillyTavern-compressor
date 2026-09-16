@@ -43,6 +43,21 @@
                 </select>
             </div>
 
+            <div class="compressor_row">
+                <label for="compressor_instruction_position">Summary instruction position</label>
+                <select id="compressor_instruction_position">
+                    <option value="system">As system (before transcript)</option>
+                    <option value="start">At the beginning (inline)</option>
+                    <option value="end">After transcript</option>
+                    <option value="after_messages">After N messages</option>
+                </select>
+            </div>
+
+            <div class="compressor_row" id="compressor_instruction_depth_row">
+                <label for="compressor_instruction_depth">Insert after N messages</label>
+                <input id="compressor_instruction_depth" type="number" min="0" max="500" step="1" />
+            </div>
+
             <h4 class="compressor_section_title">Summary generation prompt</h4>
             <p class="margin0 compressor_hint">
                 Prompt sent to the model. Placeholders:

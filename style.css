@@ -54,6 +54,10 @@
     display: none;
 }
 
+.compressor_settings.compressor_depth_off #compressor_instruction_depth_row {
+    display: none;
+}
+
 .compressor_busy {
     opacity: 0.7;
     pointer-events: none;
