@@ -56,6 +56,7 @@ const DEFAULT_FACTS_PROMPT = [
 
 const DEFAULT_FACTS_TEMPLATE = '[User facts]\n{{facts}}';
 const DEFAULT_CHRONOLOGY_TEMPLATE = '[Chronology]\n{{summary}}';
+const DEFAULT_RAW_PREFILL = 'Chronology:\n-';
 
 const GENERATION_MODES = {
     CLASSIC: 'classic',
@@ -80,6 +81,8 @@ const defaultSettings = {
     generationMode: GENERATION_MODES.RAW,
     instructionPosition: INSTRUCTION_POSITIONS.SYSTEM,
     instructionDepth: 0,
+    /** Raw-mode completion prefill (steers textgen away from RP continuation) */
+    rawPrefill: DEFAULT_RAW_PREFILL,
     responseLength: 0,
     factsDepth: 0,
     factsPosition: EXTENSION_PROMPT_TYPES.BEFORE_PROMPT,
@@ -512,10 +515,14 @@ async function generateText(promptTemplate, transcript, responseLength = 0) {
         if (typeof context.generateRaw !== 'function') {
             toastr.warning('generateRaw unavailable; falling back to Classic');
         } else {
+            const prefill = String(settings().rawPrefill ?? DEFAULT_RAW_PREFILL);
             const params = {
                 prompt: placed.prompt,
                 systemPrompt: placed.systemPrompt,
+                // Prevent Instruct from appending a character turn ( Magnum continues RP otherwise )
+                instructOverride: true,
                 quietToLoud: false,
+                prefill,
             };
             if (responseLength > 0) {
                 params.responseLength = responseLength;
@@ -800,6 +807,7 @@ function bindSettingsUi() {
     );
     $('#compressor_instruction_position').val(normalizeInstructionPosition(s.instructionPosition));
     $('#compressor_instruction_depth').val(Number(s.instructionDepth) || 0);
+    $('#compressor_raw_prefill').val(s.rawPrefill ?? DEFAULT_RAW_PREFILL);
     $('#compressor_facts_depth').val(Number(s.factsDepth) || 0);
     $('#compressor_facts_position').val(String(s.factsPosition ?? EXTENSION_PROMPT_TYPES.BEFORE_PROMPT));
     $('#compressor_chrono_template').val(s.chronologyTemplate || DEFAULT_CHRONOLOGY_TEMPLATE);
@@ -843,6 +851,11 @@ function bindSettingsUi() {
 
     $('#compressor_instruction_depth').off('input').on('input', function () {
         s.instructionDepth = Math.max(0, Number($(this).val()) || 0);
+        persist();
+    });
+
+    $('#compressor_raw_prefill').off('input').on('input', function () {
+        s.rawPrefill = String($(this).val());
         persist();
     });
 

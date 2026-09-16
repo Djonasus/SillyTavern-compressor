@@ -58,6 +58,16 @@
                 <input id="compressor_instruction_depth" type="number" min="0" max="500" step="1" />
             </div>
 
+            <div class="compressor_row">
+                <label for="compressor_raw_prefill">Raw prefill (steers completion)</label>
+                <textarea id="compressor_raw_prefill" class="text_pole" rows="2"></textarea>
+            </div>
+            <p class="margin0 compressor_hint">
+                Appended at the end of Raw generation. Helps RP models start a summary instead of dialogue.
+                Example: <code>Chronology:</code> or <code>Summary:&#10;-</code>. Empty = no prefill.
+                Instruct mode is always overridden in Raw so the character turn is not appended.
+            </p>
+
             <h4 class="compressor_section_title">Summary generation prompt</h4>
             <p class="margin0 compressor_hint">
                 Prompt sent to the model. Placeholders:
