@@ -35,6 +35,14 @@
                 <input id="compressor_response_length" type="number" min="0" max="4096" step="16" />
             </div>
 
+            <div class="compressor_row">
+                <label for="compressor_generation_mode">Generation mode</label>
+                <select id="compressor_generation_mode">
+                    <option value="raw">Raw (no character / chat context) — better for RP models</option>
+                    <option value="classic">Classic (quiet prompt in chat context)</option>
+                </select>
+            </div>
+
             <h4 class="compressor_section_title">Summary generation prompt</h4>
             <p class="margin0 compressor_hint">
                 Prompt sent to the model. Placeholders:

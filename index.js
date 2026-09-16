@@ -38,26 +38,34 @@ const EXTENSION_PROMPT_TYPES = {
 };
 
 const DEFAULT_CHRONO_PROMPT = [
-    'Ignore previous instructions. Create a concise chronological timeline of what happened in the chat below.',
+    'OOC / System task only. Do NOT write in character. Do NOT continue the roleplay.',
+    'Create a concise chronological timeline of what happened in the chat transcript.',
     'List events in order. Keep character names, important decisions, locations, and unresolved threads.',
-    'Do not invent facts. Do not write dialogue. Output only the chronology.',
+    'Do not invent facts. Do not write dialogue or narration. Output ONLY the chronology.',
     '',
     'Chat transcript:',
     '{{transcript}}',
 ].join('\n');
 
 const DEFAULT_FACTS_PROMPT = [
-    'Ignore previous instructions. From the chat transcript and the existing user facts, produce an updated bullet list of lasting facts ABOUT THE USER (preferences, identity, relationships, ongoing plans).',
+    'OOC / System task only. Do NOT write in character. Do NOT continue the roleplay.',
+    'From the chat transcript and the existing user facts, produce an updated list of lasting facts ABOUT THE USER (preferences, identity, relationships, ongoing plans).',
     'Merge: keep still-true facts, update changed ones, add new ones, drop obsolete ones.',
-    'Output ONLY a JSON array of strings, e.g. ["Fact one","Fact two"]. No markdown fences.',
+    'Output ONLY a JSON array of strings, e.g. ["Fact one","Fact two"]. No markdown fences. No dialogue.',
 ].join(' ');
 
 const DEFAULT_FACTS_TEMPLATE = '[User facts]\n{{facts}}';
 const DEFAULT_CHRONOLOGY_TEMPLATE = '[Chronology]\n{{summary}}';
 
+const GENERATION_MODES = {
+    CLASSIC: 'classic',
+    RAW: 'raw',
+};
+
 const defaultSettings = {
     factsEnabled: false,
     skipSystemMessages: true,
+    generationMode: GENERATION_MODES.RAW,
     responseLength: 0,
     factsDepth: 0,
     factsPosition: EXTENSION_PROMPT_TYPES.BEFORE_PROMPT,
@@ -368,10 +376,73 @@ function parseFactsFromModel(raw) {
         .filter(line => line !== '[' && line !== ']');
 }
 
-async function generateText(quietPrompt, responseLength) {
+/**
+ * Split a templated prompt into system instruction + transcript body for Raw mode.
+ * @param {string} promptTemplate
+ * @param {string} transcript
+ * @returns {{ systemPrompt: string, prompt: string, classicPrompt: string }}
+ */
+function buildGenerationPrompts(promptTemplate, transcript) {
+    const template = promptTemplate || '';
+    const classicPrompt = (() => {
+        let prompt = applyTemplate(template, { transcript });
+        if (!template.includes('{{transcript}}') && !template.includes('{transcript}')) {
+            prompt = `${prompt}\n\nChat transcript:\n${transcript}`;
+        }
+        return prompt;
+    })();
+
+    let systemPrompt = template
+        .replaceAll('{{transcript}}', '')
+        .replaceAll('{transcript}', '')
+        .replace(/\n*Chat transcript:\s*$/i, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+
+    systemPrompt = applyTemplate(systemPrompt || template, {});
+    if (!systemPrompt.trim()) {
+        systemPrompt = 'Summarize the chat transcript. Output only the summary.';
+    }
+
+    return {
+        systemPrompt,
+        prompt: transcript,
+        classicPrompt,
+    };
+}
+
+/**
+ * @param {string} promptTemplate Templated instruction (may include {{transcript}})
+ * @param {string} transcript Chat transcript
+ * @param {number} [responseLength]
+ * @returns {Promise<string>}
+ */
+async function generateText(promptTemplate, transcript, responseLength = 0) {
     const context = ctx();
+    const mode = settings().generationMode === GENERATION_MODES.CLASSIC
+        ? GENERATION_MODES.CLASSIC
+        : GENERATION_MODES.RAW;
+    const { systemPrompt, prompt, classicPrompt } = buildGenerationPrompts(promptTemplate, transcript);
+
+    if (mode === GENERATION_MODES.RAW) {
+        if (typeof context.generateRaw !== 'function') {
+            toastr.warning('generateRaw unavailable; falling back to Classic');
+        } else {
+            const params = {
+                prompt,
+                systemPrompt,
+                quietToLoud: false,
+            };
+            if (responseLength > 0) {
+                params.responseLength = responseLength;
+            }
+            const result = await context.generateRaw(params);
+            return String(result || '').trim();
+        }
+    }
+
     const params = {
-        quietPrompt,
+        quietPrompt: classicPrompt,
         skipWIAN: true,
         removeReasoning: true,
     };
@@ -384,15 +455,7 @@ async function generateText(quietPrompt, responseLength) {
 
 async function generateChronology(transcript) {
     const s = settings();
-    const promptTemplate = s.chronoPrompt || DEFAULT_CHRONO_PROMPT;
-    let prompt = applyTemplate(promptTemplate, { transcript });
-
-    // Backward compatible: if template has no transcript placeholder, append it
-    if (!promptTemplate.includes('{{transcript}}') && !promptTemplate.includes('{transcript}')) {
-        prompt = `${prompt}\n\nChat transcript:\n${transcript}`;
-    }
-
-    return generateText(prompt, Number(s.responseLength) || 0);
+    return generateText(s.chronoPrompt || DEFAULT_CHRONO_PROMPT, transcript, Number(s.responseLength) || 0);
 }
 
 async function generateUpdatedFacts(transcript, existingFacts) {
@@ -400,16 +463,16 @@ async function generateUpdatedFacts(transcript, existingFacts) {
     const existing = existingFacts.length
         ? existingFacts.map(f => `- ${f.text}`).join('\n')
         : '(none)';
-    const prompt = [
+    const promptTemplate = [
         s.factsPrompt || DEFAULT_FACTS_PROMPT,
         '',
         'Existing user facts:',
         existing,
         '',
         'Chat transcript:',
-        transcript,
+        '{{transcript}}',
     ].join('\n');
-    const raw = await generateText(prompt, Number(s.responseLength) || 0);
+    const raw = await generateText(promptTemplate, transcript, Number(s.responseLength) || 0);
     return parseFactsFromModel(raw);
 }
 
@@ -643,6 +706,9 @@ function bindSettingsUi() {
     $('#compressor_facts_enabled').prop('checked', !!s.factsEnabled);
     $('#compressor_skip_system').prop('checked', !!s.skipSystemMessages);
     $('#compressor_response_length').val(Number(s.responseLength) || 0);
+    $('#compressor_generation_mode').val(
+        s.generationMode === GENERATION_MODES.CLASSIC ? GENERATION_MODES.CLASSIC : GENERATION_MODES.RAW,
+    );
     $('#compressor_facts_depth').val(Number(s.factsDepth) || 0);
     $('#compressor_facts_position').val(String(s.factsPosition ?? EXTENSION_PROMPT_TYPES.BEFORE_PROMPT));
     $('#compressor_chrono_template').val(s.chronologyTemplate || DEFAULT_CHRONOLOGY_TEMPLATE);
@@ -667,6 +733,13 @@ function bindSettingsUi() {
 
     $('#compressor_response_length').off('input').on('input', function () {
         s.responseLength = Number($(this).val()) || 0;
+        persist();
+    });
+
+    $('#compressor_generation_mode').off('change').on('change', function () {
+        s.generationMode = String($(this).val()) === GENERATION_MODES.CLASSIC
+            ? GENERATION_MODES.CLASSIC
+            : GENERATION_MODES.RAW;
         persist();
     });
 
