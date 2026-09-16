@@ -1,10 +1,35 @@
 import { extension_settings, getContext, renderExtensionTemplateAsync } from '../../../extensions.js';
 import { saveSettingsDebounced } from '../../../../script.js';
 
+/** Settings key in extension_settings (stable across folder renames) */
 const EXTENSION_NAME = 'compressor';
-const EXTENSION_FOLDER = `scripts/extensions/third-party/${EXTENSION_NAME}`;
 const PROMPT_KEY = 'compressor_facts';
 const METADATA_KEY = 'compressor';
+
+/**
+ * Resolve where this extension is actually served from
+ * (e.g. third-party/compressor or third-party/SillyTavern-compressor).
+ */
+function getExtensionMountPath() {
+    try {
+        const pathName = new URL('.', import.meta.url).pathname.replace(/\/+$/, '');
+        const marker = '/scripts/extensions/';
+        const idx = pathName.indexOf(marker);
+        if (idx !== -1) {
+            return pathName.slice(idx + marker.length);
+        }
+    } catch (error) {
+        console.warn('[compressor] Failed to resolve mount path:', error);
+    }
+    return `third-party/${EXTENSION_NAME}`;
+}
+
+function getSettingsHtmlUrl() {
+    return new URL('settings.html', import.meta.url).href;
+}
+
+const EXTENSION_MOUNT = getExtensionMountPath();
+const EXTENSION_FOLDER = `scripts/extensions/${EXTENSION_MOUNT}`;
 
 const EXTENSION_PROMPT_TYPES = {
     IN_PROMPT: 0,
@@ -744,12 +769,57 @@ function registerEvents() {
 }
 
 async function addSettingsPanel() {
-    let html;
+    let html = '';
     try {
-        html = await renderExtensionTemplateAsync(`third-party/${EXTENSION_NAME}`, 'settings');
+        html = await renderExtensionTemplateAsync(EXTENSION_MOUNT, 'settings');
     } catch (error) {
-        console.warn('[compressor] Template render failed, fetching settings.html', error);
-        html = await $.get(`${EXTENSION_FOLDER}/settings.html`);
+        console.warn('[compressor] Template render failed, fetching settings.html directly', error);
+        try {
+            const response = await fetch(getSettingsHtmlUrl(), { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(`${response.status} ${response.statusText}`);
+            }
+            html = await response.text();
+        } catch (fetchError) {
+            console.error('[compressor] settings.html missing next to index.js:', fetchError);
+            toastr.error(
+                `settings.html not found in ${EXTENSION_FOLDER}. Reinstall/update the extension.`,
+                'Chat Compressor',
+            );
+            html = `
+                <div class="compressor_settings" id="compressor_settings">
+                    <div class="inline-drawer">
+                        <div class="inline-drawer-toggle inline-drawer-header">
+                            <b>Chat Compressor</b>
+                            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                        </div>
+                        <div class="inline-drawer-content">
+                            <p><code>settings.html</code> is missing. Copy it next to <code>index.js</code> or reinstall the extension.</p>
+                            <div class="compressor_actions">
+                                <div id="compressor_run_btn" class="menu_button menu_button_icon">
+                                    <i class="fa-solid fa-compress"></i>
+                                    <span>Compress now</span>
+                                </div>
+                            </div>
+                            <label class="checkbox_label" for="compressor_facts_enabled" style="display:none">
+                                <input id="compressor_facts_enabled" type="checkbox" />
+                            </label>
+                            <input id="compressor_skip_system" type="checkbox" style="display:none" />
+                            <input id="compressor_response_length" type="hidden" value="0" />
+                            <input id="compressor_facts_depth" type="hidden" value="0" />
+                            <select id="compressor_facts_position" style="display:none"><option value="2">2</option></select>
+                            <textarea id="compressor_chrono_prompt" style="display:none"></textarea>
+                            <textarea id="compressor_chrono_template" style="display:none"></textarea>
+                            <textarea id="compressor_facts_prompt" style="display:none"></textarea>
+                            <textarea id="compressor_facts_template" style="display:none"></textarea>
+                            <textarea id="compressor_facts_editor" style="display:none"></textarea>
+                            <div id="compressor_facts_reload_btn" style="display:none"></div>
+                            <div id="compressor_facts_save_btn" style="display:none"></div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
     }
 
     if (!$('#compressor_settings').length) {
