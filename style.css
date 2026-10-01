@@ -14,6 +14,23 @@
     font-size: 0.9em;
 }
 
+.compressor_settings .compressor_commands {
+    padding-left: 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    line-height: 1.35;
+}
+
+.compressor_settings .compressor_commands li {
+    margin: 0;
+}
+
+.compressor_settings .compressor_aliases {
+    opacity: 0.75;
+    font-size: 0.92em;
+}
+
 .compressor_settings textarea {
     width: 100%;
     min-height: 4.5rem;

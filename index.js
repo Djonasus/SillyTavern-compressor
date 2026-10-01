@@ -1089,6 +1089,67 @@ async function syncPoolEditor() {
     }
 }
 
+function poolLinesFromText(text) {
+    return String(text || '')
+        .split(/\r?\n/)
+        .map(line => line.replace(/^[-*•]\s+/, '').trim())
+        .filter(Boolean);
+}
+
+/**
+ * Open an editable popup for the current chat's chronology fact pool.
+ * @returns {Promise<string[]|null>} Saved lines, or null if cancelled
+ */
+async function editPoolPopup() {
+    const context = ctx();
+    if (context.groupId) {
+        toastr.error('Chat Compressor does not support group chats yet');
+        return null;
+    }
+
+    let meta;
+    try {
+        meta = await ensurePoolInitialized(true);
+    } catch (error) {
+        toastr.error(String(error?.message || error), 'Could not load fact pool');
+        return null;
+    }
+
+    const current = (meta.pool || []).map(f => f.text).join('\n');
+    const edited = await context.Popup.show.input(
+        'Edit chronology facts',
+        'One fact per line for this chat. Empty clears the pool. Cancel discards changes.',
+        current,
+        {
+            rows: 16,
+            wide: true,
+            large: true,
+            okButton: 'Save',
+            cancelButton: 'Cancel',
+            allowVerticalScrolling: true,
+        },
+    );
+
+    if (edited === null) {
+        return null;
+    }
+
+    const lines = poolLinesFromText(edited);
+    try {
+        const counted = countableMessages();
+        await savePool(lines, counted.length);
+        await syncPoolEditor();
+        toastr.success(
+            lines.length ? `Saved ${lines.length} chronology fact(s)` : 'Chronology pool cleared',
+            'Chat Compressor',
+        );
+        return lines;
+    } catch (error) {
+        toastr.error(String(error?.message || error), 'Could not save pool');
+        return null;
+    }
+}
+
 function bindSettingsUi() {
     const s = settings();
 
@@ -1209,6 +1270,10 @@ function bindSettingsUi() {
         extractFactsToPool({ force: true, silent: false });
     });
 
+    $('#compressor_edit_pool_btn').off('click').on('click', () => {
+        editPoolPopup();
+    });
+
     $('#compressor_pool_reload_btn').off('click').on('click', async () => {
         await syncPoolEditor();
         toastr.info('Chronology pool reloaded');
@@ -1217,12 +1282,11 @@ function bindSettingsUi() {
     $('#compressor_pool_save_btn').off('click').on('click', async () => {
         try {
             const counted = countableMessages();
-            const lines = String($('#compressor_pool_editor').val() || '')
-                .split(/\r?\n/)
-                .map(l => l.trim())
-                .filter(Boolean);
+            const lines = poolLinesFromText($('#compressor_pool_editor').val());
             await savePool(lines, counted.length);
-            toastr.success('Chronology pool saved');
+            toastr.success(
+                lines.length ? `Saved ${lines.length} chronology fact(s)` : 'Chronology pool cleared',
+            );
         } catch (error) {
             toastr.error(String(error?.message || error), 'Could not save pool');
         }
@@ -1300,6 +1364,22 @@ function registerSlashCommand() {
             </div>
         `,
         returns: 'extracted facts',
+    }));
+
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'editpool',
+        aliases: ['pool', 'editfacts', 'chronopool'],
+        callback: async () => {
+            const lines = await editPoolPopup();
+            return lines ? lines.join('\n') : '';
+        },
+        helpString: `
+            <div>
+                Open an editable popup for this chat’s chronology fact pool (one fact per line).
+                Also available in extension settings and via the <b>Edit pool</b> button.
+            </div>
+        `,
+        returns: 'saved pool text',
     }));
 }
 
@@ -1379,6 +1459,7 @@ async function addSettingsPanel() {
                                 </div>
                                 <div id="compressor_run_full_btn" style="display:none"></div>
                                 <div id="compressor_fact_btn" style="display:none"></div>
+                                <div id="compressor_edit_pool_btn" style="display:none"></div>
                             </div>
                             <label class="checkbox_label" for="compressor_facts_enabled" style="display:none">
                                 <input id="compressor_facts_enabled" type="checkbox" />
@@ -1429,5 +1510,5 @@ export async function init() {
         console.warn('[compressor] Pool init skipped:', error);
     }
     await refreshFactsInjection();
-    console.info('[compressor] Chat Compressor ready. Use /fact, /compress, /compressfull');
+    console.info('[compressor] Chat Compressor ready. Use /fact, /editpool, /compress, /compressfull');
 }

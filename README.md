@@ -4,7 +4,7 @@ Compresses long chats so context stays small and generation stays fast.
 
 ## What it does
 
-1. While you chat, every **N messages** (default 5) the current API model extracts **1–2 chronology facts** into a per-chat pool. You can also run **`/fact`** (or **Extract facts now**) at any time.
+1. While you chat, every **N messages** (default 5) the current API model extracts **1–2 chronology facts** into a per-chat pool. You can also run **`/fact`** (or **Extract facts now**) at any time, or edit the pool manually with **`/editpool`** / **Edit pool**.
 2. Run `/compress` (or **Compress (pool)**). Pending facts are flushed first, then the pool is **assembled** into a chronology (no extra full-chat summary call unless the pool is empty). A **popup** lets you edit it before continuing (Cancel aborts).
 3. Optionally extracts/updates **user facts** and stores them in a separate file under `data/<user>/user/files/compressor-facts-<character>.json`.
 4. Asks whether to **delete** the old chat.
@@ -26,6 +26,7 @@ Then enable **Chat Compressor** in Extensions and refresh.
 
 ```
 /fact
+/editpool
 /compress
 /compressfull
 ```

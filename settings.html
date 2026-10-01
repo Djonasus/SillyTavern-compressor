@@ -5,14 +5,31 @@
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
-            <p class="margin0">
-                <code>/fact</code> extracts 1–2 chronology facts into a pool
-                (also auto-runs every N messages).
-                <code>/compress</code> assembles that pool into a chronology
-                (editable popup), optionally refreshes user facts, then starts a new chat
-                (greeting + visible chronology).
-                <code>/compressfull</code> is the legacy one-shot full-chat summary.
-            </p>
+            <h4 class="compressor_section_title">Commands</h4>
+            <ul class="compressor_commands margin0">
+                <li>
+                    <code>/fact</code>
+                    <span class="compressor_aliases">(<code>/chatfact</code>, <code>/chronofact</code>)</span>
+                    — extract 1–2 chronology facts from new messages into the pool
+                    (also auto-runs every N messages).
+                </li>
+                <li>
+                    <code>/editpool</code>
+                    <span class="compressor_aliases">(<code>/pool</code>, <code>/editfacts</code>, <code>/chronopool</code>)</span>
+                    — open a popup to manually edit this chat’s fact pool (one fact per line).
+                </li>
+                <li>
+                    <code>/compress</code>
+                    <span class="compressor_aliases">(<code>/chatcompress</code>, <code>/archivechat</code>)</span>
+                    — assemble the pool into a chronology, optionally refresh user facts,
+                    then start a new chat (greeting + visible chronology).
+                </li>
+                <li>
+                    <code>/compressfull</code>
+                    <span class="compressor_aliases">(<code>/fullcompress</code>, <code>/summarizecompress</code>)</span>
+                    — legacy one-shot full-chat chronology summary, then start a new chat.
+                </li>
+            </ul>
 
             <div class="compressor_actions">
                 <div id="compressor_run_btn" class="menu_button menu_button_icon">
@@ -26,6 +43,10 @@
                 <div id="compressor_fact_btn" class="menu_button menu_button_icon">
                     <i class="fa-solid fa-list"></i>
                     <span>Extract facts now</span>
+                </div>
+                <div id="compressor_edit_pool_btn" class="menu_button menu_button_icon">
+                    <i class="fa-solid fa-pen-to-square"></i>
+                    <span>Edit pool</span>
                 </div>
             </div>
 
@@ -89,7 +110,8 @@
             <h4 class="compressor_section_title">Chronology fact pool (current chat)</h4>
             <p class="margin0">
                 One fact per line. Stored in this chat’s metadata and assembled by
-                <code>/compress</code>. Placeholders for the extract prompt:
+                <code>/compress</code>. Edit here, via <code>/editpool</code>, or the
+                <b>Edit pool</b> button. Placeholders for the extract prompt:
                 <code>{{transcript}}</code>, <code>{{pool}}</code>
             </p>
             <textarea id="compressor_pool_editor" class="text_pole compressor_facts_editor"></textarea>
