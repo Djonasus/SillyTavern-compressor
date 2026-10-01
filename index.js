@@ -57,6 +57,19 @@ const DEFAULT_FACTS_PROMPT = [
 const DEFAULT_FACTS_TEMPLATE = '[User facts]\n{{facts}}';
 const DEFAULT_CHRONOLOGY_TEMPLATE = '[Chronology]\n{{summary}}';
 const DEFAULT_RAW_PREFILL = 'Chronology:\n-';
+const DEFAULT_POOL_PREFILL = '["';
+const DEFAULT_POOL_PROMPT = [
+    'OOC / System task only. Do NOT write in character. Do NOT continue the roleplay.',
+    'From the NEW chat messages, extract 1 or 2 concise chronology facts: what happened, who did what, important decisions, locations, unresolved threads.',
+    'Do not repeat facts already in the pool. Do not invent facts. Do not write dialogue or narration.',
+    'Output ONLY a JSON array of 1-2 short strings, e.g. ["Fact one","Fact two"]. No markdown fences.',
+    '',
+    'Existing chronology facts:',
+    '{{pool}}',
+    '',
+    'New messages:',
+    '{{transcript}}',
+].join('\n');
 
 const GENERATION_MODES = {
     CLASSIC: 'classic',
@@ -90,6 +103,9 @@ const defaultSettings = {
     chronoPrompt: DEFAULT_CHRONO_PROMPT,
     factsPrompt: DEFAULT_FACTS_PROMPT,
     factsTemplate: DEFAULT_FACTS_TEMPLATE,
+    /** Auto-extract 1–2 chronology facts every N messages. 0 = off */
+    factInterval: 5,
+    poolPrompt: DEFAULT_POOL_PROMPT,
 };
 
 let busy = false;
@@ -378,6 +394,106 @@ function buildTranscript(chat, skipSystem) {
     return lines.join('\n\n');
 }
 
+function isCountableMessage(message, skipSystem) {
+    if (!message?.mes || !String(message.mes).trim()) {
+        return false;
+    }
+    if (message.extra?.compressor) {
+        return false;
+    }
+    if (skipSystem && message.is_system) {
+        return false;
+    }
+    return true;
+}
+
+function countableMessages(chat = ctx().chat) {
+    const skipSystem = !!settings().skipSystemMessages;
+    return (chat || []).filter(message => isCountableMessage(message, skipSystem));
+}
+
+function getPluginMeta() {
+    const context = ctx();
+    const metadata = context.chatMetadata;
+    if (!metadata || typeof metadata !== 'object') {
+        throw new Error('Chat metadata is not available');
+    }
+    if (!metadata[METADATA_KEY] || typeof metadata[METADATA_KEY] !== 'object') {
+        metadata[METADATA_KEY] = {};
+    }
+    const meta = metadata[METADATA_KEY];
+    if (!Array.isArray(meta.pool)) {
+        meta.pool = [];
+    }
+    return meta;
+}
+
+async function ensurePoolInitialized(save = false) {
+    const meta = getPluginMeta();
+    if (typeof meta.processedCount !== 'number' || meta.processedCount < 0) {
+        meta.processedCount = countableMessages().length;
+        if (save) {
+            try {
+                await ctx().saveMetadata();
+            } catch (error) {
+                console.warn('[compressor] Failed to init pool metadata:', error);
+            }
+        }
+    }
+    return meta;
+}
+
+function formatPoolAsChronology(pool) {
+    return (pool || [])
+        .map(item => {
+            const text = typeof item === 'string' ? item : item?.text;
+            return String(text || '').trim();
+        })
+        .filter(Boolean)
+        .map(text => (text.startsWith('- ') ? text : `- ${text}`))
+        .join('\n');
+}
+
+async function savePool(pool, processedCount) {
+    const context = ctx();
+    const meta = getPluginMeta();
+    meta.pool = (pool || [])
+        .map(item => {
+            if (typeof item === 'string') {
+                return { id: context.uuidv4(), text: item.trim() };
+            }
+            return {
+                id: item.id || context.uuidv4(),
+                text: String(item.text || '').trim(),
+            };
+        })
+        .filter(item => item.text);
+    if (typeof processedCount === 'number') {
+        meta.processedCount = processedCount;
+    }
+    await context.saveMetadata();
+    return meta;
+}
+
+function sliceUnprocessedMessages(force) {
+    const skipSystem = !!settings().skipSystemMessages;
+    const chat = ctx().chat || [];
+    const counted = [];
+    for (const message of chat) {
+        if (isCountableMessage(message, skipSystem)) {
+            counted.push(message);
+        }
+    }
+    const meta = getPluginMeta();
+    const processedCount = Math.min(meta.processedCount || 0, counted.length);
+    let slice = counted.slice(processedCount);
+    if (!slice.length && force) {
+        const interval = Math.max(1, Number(settings().factInterval) || 5);
+        slice = counted.slice(-interval);
+    }
+    return { slice, counted, processedCount };
+}
+
 function parseFactsFromModel(raw) {
     if (!raw) {
         return [];
@@ -501,9 +617,10 @@ function placeInstruction(instruction, blocks) {
  * @param {string} promptTemplate Templated instruction (may include {{transcript}})
  * @param {string} transcript Chat transcript
  * @param {number} [responseLength]
+ * @param {{ prefill?: string }} [options]
  * @returns {Promise<string>}
  */
-async function generateText(promptTemplate, transcript, responseLength = 0) {
+async function generateText(promptTemplate, transcript, responseLength = 0, options = {}) {
     const context = ctx();
     const mode = settings().generationMode === GENERATION_MODES.CLASSIC
         ? GENERATION_MODES.CLASSIC
@@ -515,7 +632,9 @@ async function generateText(promptTemplate, transcript, responseLength = 0) {
         if (typeof context.generateRaw !== 'function') {
             toastr.warning('generateRaw unavailable; falling back to Classic');
         } else {
-            const prefill = String(settings().rawPrefill ?? DEFAULT_RAW_PREFILL);
+            const prefill = options.prefill !== undefined
+                ? String(options.prefill)
+                : String(settings().rawPrefill ?? DEFAULT_RAW_PREFILL);
             const params = {
                 prompt: placed.prompt,
                 systemPrompt: placed.systemPrompt,
@@ -552,6 +671,134 @@ async function generateText(promptTemplate, transcript, responseLength = 0) {
 async function generateChronology(transcript) {
     const s = settings();
     return generateText(s.chronoPrompt || DEFAULT_CHRONO_PROMPT, transcript, Number(s.responseLength) || 0);
+}
+
+async function generatePoolFacts(transcript, existingPool) {
+    const s = settings();
+    const existing = existingPool.length
+        ? existingPool.map(f => `- ${f.text || f}`).join('\n')
+        : '(none)';
+    const template = applyTemplate(s.poolPrompt || DEFAULT_POOL_PROMPT, { pool: existing });
+    const raw = await generateText(
+        template,
+        transcript,
+        Number(s.responseLength) || 0,
+        { prefill: DEFAULT_POOL_PREFILL },
+    );
+    return parseFactsFromModel(raw).slice(0, 2);
+}
+
+/**
+ * Extract 1–2 chronology facts from new messages and append them to the chat pool.
+ * @param {{ force?: boolean, silent?: boolean }} [options]
+ * @returns {Promise<string[]>}
+ */
+async function extractFactsToPool(options = {}) {
+    const { force = false, silent = false } = options;
+    if (busy) {
+        if (!silent) {
+            toastr.warning('Compressor is busy');
+        }
+        return [];
+    }
+
+    const context = ctx();
+    if (context.groupId) {
+        if (!silent && force) {
+            toastr.error('Chat Compressor does not support group chats yet');
+        }
+        return [];
+    }
+    if (context.characterId === undefined || context.characterId === null) {
+        if (!silent && force) {
+            toastr.error('Select a character first');
+        }
+        return [];
+    }
+    if (context.onlineStatus === 'no_connection') {
+        if (!silent && force) {
+            toastr.error('API is not connected');
+        }
+        return [];
+    }
+
+    await ensurePoolInitialized(true);
+    const { slice, counted } = sliceUnprocessedMessages(force);
+    if (!slice.length) {
+        if (!silent && force) {
+            toastr.info('No new messages to extract facts from');
+        }
+        return [];
+    }
+
+    const transcript = buildTranscript(slice, !!settings().skipSystemMessages);
+    if (!transcript.trim()) {
+        if (!silent && force) {
+            toastr.info('No new messages to extract facts from');
+        }
+        return [];
+    }
+
+    busy = true;
+    $('#compressor_settings').addClass('compressor_busy');
+    try {
+        if (!silent) {
+            toastr.info('Extracting chronology facts…', 'Chat Compressor');
+        }
+        const meta = getPluginMeta();
+        const facts = await generatePoolFacts(transcript, meta.pool || []);
+        if (!facts.length) {
+            // Keep processedCount unchanged so a later /fact or auto-run can retry
+            if (!silent) {
+                toastr.warning('Model returned no chronology facts');
+            }
+            return [];
+        }
+
+        const merged = [...(meta.pool || []), ...facts];
+        await savePool(merged, counted.length);
+        await syncPoolEditor();
+        if (!silent) {
+            toastr.success(`Added ${facts.length} chronology fact(s)`, 'Chat Compressor');
+        }
+        return facts;
+    } catch (error) {
+        console.error('[compressor] Fact extraction failed:', error);
+        if (!silent) {
+            toastr.error(String(error?.message || error), 'Fact extraction failed');
+        }
+        return [];
+    } finally {
+        busy = false;
+        $('#compressor_settings').removeClass('compressor_busy');
+    }
+}
+
+async function maybeAutoExtractFacts() {
+    if (busy) {
+        return;
+    }
+    const interval = Math.max(0, Number(settings().factInterval) || 0);
+    if (interval <= 0) {
+        return;
+    }
+    const context = ctx();
+    if (context.groupId || context.characterId === undefined || context.characterId === null) {
+        return;
+    }
+    if (context.onlineStatus === 'no_connection') {
+        return;
+    }
+    try {
+        await ensurePoolInitialized(true);
+        const { slice } = sliceUnprocessedMessages(false);
+        if (slice.length < interval) {
+            return;
+        }
+        await extractFactsToPool({ force: false, silent: true });
+    } catch (error) {
+        console.warn('[compressor] Auto fact extraction skipped:', error);
+    }
 }
 
 async function generateUpdatedFacts(transcript, existingFacts) {
@@ -642,6 +889,7 @@ async function startNewChat(deleteOld) {
 }
 
 function buildChronologyMessage(chronologyText) {
+    const context = ctx();
     const s = settings();
     const template = s.chronologyTemplate || DEFAULT_CHRONOLOGY_TEMPLATE;
     const summary = chronologyText.trim();
@@ -652,10 +900,13 @@ function buildChronologyMessage(chronologyText) {
         mes = `${mes}\n${summary}`.trim();
     }
 
+    const character = context.characters?.[context.characterId];
+    // Visible character-side message (not is_system / ghost) so it stays in the chat UI
     return {
-        name: 'Chronology',
+        name: character?.name || 'Chronology',
         is_user: false,
-        is_system: true,
+        is_system: false,
+        force_avatar: character?.avatar || undefined,
         send_date: new Date().toLocaleString(),
         mes: mes.trim(),
         extra: {
@@ -684,6 +935,8 @@ async function injectChronologyAfterGreeting(chronologyText, sourceChat) {
         sourceChat: sourceChat || '',
         compressedAt: new Date().toISOString(),
         version: 1,
+        pool: [],
+        processedCount: countableMessages().length,
     };
     await context.saveMetadata();
     await context.saveChat();
@@ -691,9 +944,13 @@ async function injectChronologyAfterGreeting(chronologyText, sourceChat) {
 
 /**
  * Main compress pipeline.
+ * @param {{ usePool?: boolean }} [options] usePool=true assembles the fact pool;
+ *   usePool=false runs the legacy full-chat chronology summary.
  * @returns {Promise<string>} Chronology text
  */
-async function compressChat() {
+async function compressChat(options = {}) {
+    const { usePool = true } = options;
+
     if (busy) {
         toastr.warning('Compression already in progress');
         return '';
@@ -721,6 +978,15 @@ async function compressChat() {
         return '';
     }
 
+    // Flush any unprocessed messages into the pool before assembling
+    if (usePool) {
+        await extractFactsToPool({ force: false, silent: true });
+        if (busy) {
+            toastr.warning('Compression already in progress');
+            return '';
+        }
+    }
+
     busy = true;
     $('#compressor_settings').addClass('compressor_busy');
 
@@ -734,10 +1000,24 @@ async function compressChat() {
             return '';
         }
 
-        toastr.info('Generating chronology…', 'Chat Compressor');
-        let chronology = await generateChronology(transcript);
+        let chronology = '';
+
+        if (usePool) {
+            await ensurePoolInitialized(true);
+            chronology = formatPoolAsChronology(getPluginMeta().pool);
+            if (chronology) {
+                toastr.info('Assembling chronology from fact pool…', 'Chat Compressor');
+            } else {
+                toastr.info('Fact pool is empty; generating chronology from the transcript…', 'Chat Compressor');
+                chronology = await generateChronology(transcript);
+            }
+        } else {
+            toastr.info('Generating full-chat chronology…', 'Chat Compressor');
+            chronology = await generateChronology(transcript);
+        }
+
         if (!chronology) {
-            toastr.error('Empty chronology from the model');
+            toastr.error('Empty chronology');
             return '';
         }
 
@@ -796,6 +1076,19 @@ async function syncFactsEditor(doc = null) {
     editor.val((data.facts || []).map(f => f.text).join('\n'));
 }
 
+async function syncPoolEditor() {
+    const editor = $('#compressor_pool_editor');
+    if (!editor.length) {
+        return;
+    }
+    try {
+        const meta = await ensurePoolInitialized(false);
+        editor.val((meta.pool || []).map(f => f.text).join('\n'));
+    } catch {
+        editor.val('');
+    }
+}
+
 function bindSettingsUi() {
     const s = settings();
 
@@ -812,6 +1105,8 @@ function bindSettingsUi() {
     $('#compressor_facts_position').val(String(s.factsPosition ?? EXTENSION_PROMPT_TYPES.BEFORE_PROMPT));
     $('#compressor_chrono_template').val(s.chronologyTemplate || DEFAULT_CHRONOLOGY_TEMPLATE);
     $('#compressor_chrono_prompt').val(s.chronoPrompt || DEFAULT_CHRONO_PROMPT);
+    $('#compressor_pool_prompt').val(s.poolPrompt || DEFAULT_POOL_PROMPT);
+    $('#compressor_fact_interval').val(Number(s.factInterval) ?? 5);
     $('#compressor_facts_prompt').val(s.factsPrompt || DEFAULT_FACTS_PROMPT);
     $('#compressor_facts_template').val(s.factsTemplate || DEFAULT_FACTS_TEMPLATE);
     updateFactsUiVisibility();
@@ -881,6 +1176,16 @@ function bindSettingsUi() {
         persist();
     });
 
+    $('#compressor_pool_prompt').off('input').on('input', function () {
+        s.poolPrompt = String($(this).val());
+        persist();
+    });
+
+    $('#compressor_fact_interval').off('input').on('input', function () {
+        s.factInterval = Math.max(0, Number($(this).val()) || 0);
+        persist();
+    });
+
     $('#compressor_facts_prompt').off('input').on('input', function () {
         s.factsPrompt = String($(this).val());
         persist();
@@ -893,7 +1198,34 @@ function bindSettingsUi() {
     });
 
     $('#compressor_run_btn').off('click').on('click', () => {
-        compressChat();
+        compressChat({ usePool: true });
+    });
+
+    $('#compressor_run_full_btn').off('click').on('click', () => {
+        compressChat({ usePool: false });
+    });
+
+    $('#compressor_fact_btn').off('click').on('click', () => {
+        extractFactsToPool({ force: true, silent: false });
+    });
+
+    $('#compressor_pool_reload_btn').off('click').on('click', async () => {
+        await syncPoolEditor();
+        toastr.info('Chronology pool reloaded');
+    });
+
+    $('#compressor_pool_save_btn').off('click').on('click', async () => {
+        try {
+            const counted = countableMessages();
+            const lines = String($('#compressor_pool_editor').val() || '')
+                .split(/\r?\n/)
+                .map(l => l.trim())
+                .filter(Boolean);
+            await savePool(lines, counted.length);
+            toastr.success('Chronology pool saved');
+        } catch (error) {
+            toastr.error(String(error?.message || error), 'Could not save pool');
+        }
     });
 
     $('#compressor_facts_reload_btn').off('click').on('click', async () => {
@@ -928,16 +1260,46 @@ function registerSlashCommand() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'compress',
         aliases: ['chatcompress', 'archivechat'],
-        callback: async () => compressChat(),
+        callback: async () => compressChat({ usePool: true }),
         helpString: `
             <div>
-                Compresses the current chat into a chronology (shown in an editable popup),
-                updates persistent user facts, and starts a new chat.
-                The character greeting stays first; chronology is added as the second message.
+                Assembles the chronology fact pool into a timeline (editable popup),
+                optionally updates persistent user facts, and starts a new chat.
+                The character greeting stays first; chronology is added as a visible second message.
                 You will be asked whether to delete the old chat.
             </div>
         `,
         returns: 'chronology text',
+    }));
+
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'compressfull',
+        aliases: ['fullcompress', 'summarizecompress'],
+        callback: async () => compressChat({ usePool: false }),
+        helpString: `
+            <div>
+                Legacy mode: summarize the entire chat transcript into a chronology in one call
+                (same as the old <code>/compress</code>), then start a new chat.
+                Prefer <code>/compress</code> when the fact pool is in use.
+            </div>
+        `,
+        returns: 'chronology text',
+    }));
+
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'fact',
+        aliases: ['chatfact', 'chronofact'],
+        callback: async () => {
+            const facts = await extractFactsToPool({ force: true, silent: false });
+            return facts.join('\n');
+        },
+        helpString: `
+            <div>
+                Extract 1–2 chronology facts from new messages and append them to the pool.
+                Facts are assembled by <code>/compress</code> instead of a full-chat summary.
+            </div>
+        `,
+        returns: 'extracted facts',
     }));
 }
 
@@ -946,14 +1308,40 @@ function registerEvents() {
     const { eventSource, eventTypes } = context;
 
     const onContextChange = async () => {
+        await ensurePoolInitialized(true);
         await refreshFactsInjection();
         await syncFactsEditor();
+        await syncPoolEditor();
+    };
+
+    const onNewMessage = () => {
+        delay(150).then(() => maybeAutoExtractFacts());
     };
 
     eventSource.on(eventTypes.CHAT_CHANGED, onContextChange);
     eventSource.on(eventTypes.CHAT_CREATED, onContextChange);
     if (eventTypes.CHARACTER_EDITED) {
         eventSource.on(eventTypes.CHARACTER_EDITED, onContextChange);
+    }
+    if (eventTypes.MESSAGE_RECEIVED) {
+        eventSource.on(eventTypes.MESSAGE_RECEIVED, onNewMessage);
+    }
+    if (eventTypes.MESSAGE_SENT) {
+        eventSource.on(eventTypes.MESSAGE_SENT, onNewMessage);
+    }
+    if (eventTypes.MESSAGE_DELETED) {
+        eventSource.on(eventTypes.MESSAGE_DELETED, async () => {
+            const meta = getPluginMeta();
+            const n = countableMessages().length;
+            if ((meta.processedCount || 0) > n) {
+                meta.processedCount = n;
+                try {
+                    await ctx().saveMetadata();
+                } catch (error) {
+                    console.warn('[compressor] Failed to clamp pool progress:', error);
+                }
+            }
+        });
     }
 }
 
@@ -989,6 +1377,8 @@ async function addSettingsPanel() {
                                     <i class="fa-solid fa-compress"></i>
                                     <span>Compress now</span>
                                 </div>
+                                <div id="compressor_run_full_btn" style="display:none"></div>
+                                <div id="compressor_fact_btn" style="display:none"></div>
                             </div>
                             <label class="checkbox_label" for="compressor_facts_enabled" style="display:none">
                                 <input id="compressor_facts_enabled" type="checkbox" />
@@ -996,12 +1386,17 @@ async function addSettingsPanel() {
                             <input id="compressor_skip_system" type="checkbox" style="display:none" />
                             <input id="compressor_response_length" type="hidden" value="0" />
                             <input id="compressor_facts_depth" type="hidden" value="0" />
+                            <input id="compressor_fact_interval" type="hidden" value="5" />
                             <select id="compressor_facts_position" style="display:none"><option value="2">2</option></select>
                             <textarea id="compressor_chrono_prompt" style="display:none"></textarea>
                             <textarea id="compressor_chrono_template" style="display:none"></textarea>
+                            <textarea id="compressor_pool_prompt" style="display:none"></textarea>
+                            <textarea id="compressor_pool_editor" style="display:none"></textarea>
                             <textarea id="compressor_facts_prompt" style="display:none"></textarea>
                             <textarea id="compressor_facts_template" style="display:none"></textarea>
                             <textarea id="compressor_facts_editor" style="display:none"></textarea>
+                            <div id="compressor_pool_reload_btn" style="display:none"></div>
+                            <div id="compressor_pool_save_btn" style="display:none"></div>
                             <div id="compressor_facts_reload_btn" style="display:none"></div>
                             <div id="compressor_facts_save_btn" style="display:none"></div>
                         </div>
@@ -1016,6 +1411,7 @@ async function addSettingsPanel() {
     }
     bindSettingsUi();
     await syncFactsEditor();
+    await syncPoolEditor();
 }
 
 /**
@@ -1026,6 +1422,12 @@ export async function init() {
     await addSettingsPanel();
     registerSlashCommand();
     registerEvents();
+    try {
+        await ensurePoolInitialized(true);
+        await syncPoolEditor();
+    } catch (error) {
+        console.warn('[compressor] Pool init skipped:', error);
+    }
     await refreshFactsInjection();
-    console.info('[compressor] Chat Compressor ready. Use /compress');
+    console.info('[compressor] Chat Compressor ready. Use /fact, /compress, /compressfull');
 }

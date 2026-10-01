@@ -6,15 +6,26 @@
         </div>
         <div class="inline-drawer-content">
             <p class="margin0">
-                Slash command: <code>/compress</code> — summarize the chat into a chronology
-                (editable popup), optionally refresh user facts, then start a new chat
-                (greeting + chronology).
+                <code>/fact</code> extracts 1–2 chronology facts into a pool
+                (also auto-runs every N messages).
+                <code>/compress</code> assembles that pool into a chronology
+                (editable popup), optionally refreshes user facts, then starts a new chat
+                (greeting + visible chronology).
+                <code>/compressfull</code> is the legacy one-shot full-chat summary.
             </p>
 
             <div class="compressor_actions">
                 <div id="compressor_run_btn" class="menu_button menu_button_icon">
                     <i class="fa-solid fa-compress"></i>
-                    <span>Compress now</span>
+                    <span>Compress (pool)</span>
+                </div>
+                <div id="compressor_run_full_btn" class="menu_button menu_button_icon">
+                    <i class="fa-solid fa-file-lines"></i>
+                    <span>Compress (full summary)</span>
+                </div>
+                <div id="compressor_fact_btn" class="menu_button menu_button_icon">
+                    <i class="fa-solid fa-list"></i>
+                    <span>Extract facts now</span>
                 </div>
             </div>
 
@@ -27,6 +38,13 @@
                 <input id="compressor_skip_system" type="checkbox" />
                 <span>Skip system messages in transcript</span>
             </label>
+
+            <div class="compressor_row">
+                <label for="compressor_fact_interval">
+                    Auto-extract facts every N messages (0 = off)
+                </label>
+                <input id="compressor_fact_interval" type="number" min="0" max="200" step="1" />
+            </div>
 
             <div class="compressor_row">
                 <label for="compressor_response_length">
@@ -68,10 +86,31 @@
                 Instruct mode is always overridden in Raw so the character turn is not appended.
             </p>
 
-            <h4 class="compressor_section_title">Summary generation prompt</h4>
+            <h4 class="compressor_section_title">Chronology fact pool (current chat)</h4>
+            <p class="margin0">
+                One fact per line. Stored in this chat’s metadata and assembled by
+                <code>/compress</code>. Placeholders for the extract prompt:
+                <code>{{transcript}}</code>, <code>{{pool}}</code>
+            </p>
+            <textarea id="compressor_pool_editor" class="text_pole compressor_facts_editor"></textarea>
+            <div class="compressor_actions">
+                <div id="compressor_pool_reload_btn" class="menu_button menu_button_icon">
+                    <i class="fa-solid fa-rotate"></i>
+                    <span>Reload pool</span>
+                </div>
+                <div id="compressor_pool_save_btn" class="menu_button menu_button_icon">
+                    <i class="fa-solid fa-floppy-disk"></i>
+                    <span>Save pool</span>
+                </div>
+            </div>
+
+            <h4 class="compressor_section_title">Fact extraction prompt</h4>
+            <textarea id="compressor_pool_prompt" class="text_pole compressor_prompt_field"></textarea>
+
+            <h4 class="compressor_section_title">Full chronology prompt</h4>
             <p class="margin0 compressor_hint">
-                Prompt sent to the model. Placeholders:
-                <code>{{transcript}}</code> / <code>{transcript}</code>
+                Used by <code>/compressfull</code>, and by <code>/compress</code> if the pool is empty.
+                Placeholders: <code>{{transcript}}</code> / <code>{transcript}</code>
             </p>
             <textarea id="compressor_chrono_prompt" class="text_pole compressor_prompt_field"></textarea>
 

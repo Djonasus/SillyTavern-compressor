@@ -4,13 +4,14 @@ Compresses long chats so context stays small and generation stays fast.
 
 ## What it does
 
-1. Run `/compress` (or the **Compress now** button in extension settings).
-2. The current API model writes a **chronology** of the chat (**Raw** mode by default: no character card / chat context; switch to Classic in settings if needed).
-3. A **popup** shows the chronology so you can edit it before continuing (Cancel aborts).
-4. Optionally extracts/updates **user facts** and stores them in a separate file under `data/<user>/user/files/compressor-facts-<character>.json`.
-5. Asks whether to **delete** the old chat.
-6. Opens a **new chat**: first message = character greeting, second = chronology (`is_system`).
-7. Facts are injected into the prompt on every chat with that character via `setExtensionPrompt`.
+1. While you chat, every **N messages** (default 5) the current API model extracts **1–2 chronology facts** into a per-chat pool. You can also run **`/fact`** (or **Extract facts now**) at any time.
+2. Run `/compress` (or **Compress (pool)**). Pending facts are flushed first, then the pool is **assembled** into a chronology (no extra full-chat summary call unless the pool is empty). A **popup** lets you edit it before continuing (Cancel aborts).
+3. Optionally extracts/updates **user facts** and stores them in a separate file under `data/<user>/user/files/compressor-facts-<character>.json`.
+4. Asks whether to **delete** the old chat.
+5. Opens a **new chat**: first message = character greeting, second = chronology as a **visible** character message (not a hidden/ghost system message).
+6. Persistent user facts are injected into the prompt on every chat with that character via `setExtensionPrompt`.
+
+**Legacy:** `/compressfull` (or **Compress (full summary)**) still does a one-shot full-chat chronology summary, like the old `/compress`.
 
 ## Install
 
@@ -24,10 +25,12 @@ Then enable **Chat Compressor** in Extensions and refresh.
 ## Usage
 
 ```
+/fact
 /compress
+/compressfull
 ```
 
-Edit prompts, facts injection, and the facts list in **Extensions → Chat Compressor**.
+Edit prompts, the fact interval, the chronology pool, facts injection, and the user-facts list in **Extensions → Chat Compressor**. Set the interval to `0` to disable auto-extraction.
 
 ## Notes
 
