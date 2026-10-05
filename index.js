@@ -60,11 +60,13 @@ const DEFAULT_RAW_PREFILL = 'Chronology:\n-';
 const DEFAULT_POOL_PREFILL = '["';
 const DEFAULT_POOL_PROMPT = [
     'OOC / System task only. Do NOT write in character. Do NOT continue the roleplay.',
-    'From the NEW chat messages, extract 1 or 2 concise chronology facts: what happened, who did what, important decisions, locations, unresolved threads.',
-    'Do not repeat facts already in the pool. Do not invent facts. Do not write dialogue or narration.',
-    'Output ONLY a JSON array of 1-2 short strings, e.g. ["Fact one","Fact two"]. No markdown fences.',
+    'From the NEW chat messages only, extract 1 or 2 concise chronology facts that are NOT already covered by the existing pool.',
+    'Skip anything already stated or implied in the existing facts (same event, same decision, same location update).',
+    'If the new messages add nothing new, output [] .',
+    'Do not invent facts. Do not write dialogue or narration.',
+    'Output ONLY a JSON array of 0-2 short strings, e.g. ["Fact one"] or []. No markdown fences.',
     '',
-    'Existing chronology facts:',
+    'Existing chronology facts (do NOT repeat):',
     '{{pool}}',
     '',
     'New messages:',
@@ -130,6 +132,23 @@ function loadSettings() {
         s.chronologyTemplate = prefix
             ? `${prefix}\n{{summary}}`
             : DEFAULT_CHRONOLOGY_TEMPLATE;
+    }
+
+    // Refresh stock pool prompt if the user still has the pre-dedupe default
+    const legacyPoolPrompt = [
+        'OOC / System task only. Do NOT write in character. Do NOT continue the roleplay.',
+        'From the NEW chat messages, extract 1 or 2 concise chronology facts: what happened, who did what, important decisions, locations, unresolved threads.',
+        'Do not repeat facts already in the pool. Do not invent facts. Do not write dialogue or narration.',
+        'Output ONLY a JSON array of 1-2 short strings, e.g. ["Fact one","Fact two"]. No markdown fences.',
+        '',
+        'Existing chronology facts:',
+        '{{pool}}',
+        '',
+        'New messages:',
+        '{{transcript}}',
+    ].join('\n');
+    if (s.poolPrompt === legacyPoolPrompt) {
+        s.poolPrompt = DEFAULT_POOL_PROMPT;
     }
 
     for (const [key, value] of Object.entries(defaultSettings)) {
@@ -524,6 +543,74 @@ function parseFactsFromModel(raw) {
 }
 
 /**
+ * Normalize fact text for duplicate detection.
+ * @param {string} text
+ * @returns {string}
+ */
+function normalizeFactText(text) {
+    return String(text || '')
+        .toLowerCase()
+        .replace(/^[-*•\d.)\s]+/, '')
+        .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+/**
+ * Drop facts that already exist in the pool (exact or near-duplicate).
+ * @param {string[]} candidates
+ * @param {{ text?: string }[]|string[]} existingPool
+ * @returns {string[]}
+ */
+function dedupeFactsAgainstPool(candidates, existingPool = []) {
+    const existingNorms = (existingPool || [])
+        .map(item => normalizeFactText(typeof item === 'string' ? item : item?.text))
+        .filter(Boolean);
+
+    const accepted = [];
+    const acceptedNorms = [];
+
+    for (const candidate of candidates || []) {
+        const text = String(candidate || '').trim();
+        const norm = normalizeFactText(text);
+        if (!norm) {
+            continue;
+        }
+
+        const isDup = [...existingNorms, ...acceptedNorms].some(other => {
+            if (norm === other) {
+                return true;
+            }
+            // Soft match: one fact fully contains the other (same event, longer wording)
+            if (norm.length >= 12 && other.length >= 12) {
+                return norm.includes(other) || other.includes(norm);
+            }
+            return false;
+        });
+
+        if (isDup) {
+            continue;
+        }
+
+        accepted.push(text);
+        acceptedNorms.push(norm);
+    }
+
+    return accepted;
+}
+
+function formatPoolForPrompt(existingPool) {
+    if (!existingPool?.length) {
+        return '(none)';
+    }
+    return existingPool
+        .map(f => `- ${typeof f === 'string' ? f : (f.text || '')}`)
+        .map(line => line.trim())
+        .filter(line => line !== '-')
+        .join('\n') || '(none)';
+}
+
+/**
  * Split a templated prompt into instruction + transcript blocks.
  * @param {string} promptTemplate
  * @param {string} transcript
@@ -675,17 +762,41 @@ async function generateChronology(transcript) {
 
 async function generatePoolFacts(transcript, existingPool) {
     const s = settings();
-    const existing = existingPool.length
-        ? existingPool.map(f => `- ${f.text || f}`).join('\n')
-        : '(none)';
-    const template = applyTemplate(s.poolPrompt || DEFAULT_POOL_PROMPT, { pool: existing });
-    const raw = await generateText(
-        template,
+    const existing = formatPoolForPrompt(existingPool);
+
+    // Ensure the active prompt can receive the pool even if the user edited it out
+    let promptTemplate = s.poolPrompt || DEFAULT_POOL_PROMPT;
+    if (!promptTemplate.includes('{{pool}}') && !promptTemplate.includes('{pool}')) {
+        promptTemplate = [
+            promptTemplate.trim(),
+            '',
+            'Existing chronology facts (do NOT repeat):',
+            '{{pool}}',
+        ].join('\n');
+    }
+    promptTemplate = applyTemplate(promptTemplate, { pool: existing });
+
+    // Also put the pool into the user/transcript side so Raw models that
+    // under-attend system prompts still see prior facts.
+    const transcriptWithPool = [
+        'Existing chronology facts (do NOT repeat or rephrase):',
+        existing,
+        '',
+        'New messages only (extract NEW facts from these):',
         transcript,
+    ].join('\n');
+
+    const raw = await generateText(
+        promptTemplate,
+        transcriptWithPool,
         Number(s.responseLength) || 0,
         { prefill: DEFAULT_POOL_PREFILL },
     );
-    return parseFactsFromModel(raw).slice(0, 2);
+    const parsed = parseFactsFromModel(raw).slice(0, 2);
+    return {
+        parsed,
+        unique: dedupeFactsAgainstPool(parsed, existingPool),
+    };
 }
 
 /**
@@ -746,11 +857,19 @@ async function extractFactsToPool(options = {}) {
             toastr.info('Extracting chronology facts…', 'Chat Compressor');
         }
         const meta = getPluginMeta();
-        const facts = await generatePoolFacts(transcript, meta.pool || []);
-        if (!facts.length) {
-            // Keep processedCount unchanged so a later /fact or auto-run can retry
+        const { parsed, unique: facts } = await generatePoolFacts(transcript, meta.pool || []);
+        if (!parsed.length) {
+            // Model returned nothing useful — keep progress so a later /fact can retry
             if (!silent) {
                 toastr.warning('Model returned no chronology facts');
+            }
+            return [];
+        }
+        if (!facts.length) {
+            // Everything was already in the pool — advance so we don't loop on the same slice
+            await savePool(meta.pool, counted.length);
+            if (!silent) {
+                toastr.info('No new chronology facts (duplicates skipped)', 'Chat Compressor');
             }
             return [];
         }
