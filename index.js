@@ -1036,7 +1036,71 @@ function buildChronologyMessage(chronologyText) {
     };
 }
 
-async function injectChronologyAfterGreeting(chronologyText, sourceChat) {
+/**
+ * Last non-system chat message to carry into the compressed chat.
+ * @param {any[]} [chat]
+ * @returns {any|null}
+ */
+function getLastCarryoverMessage(chat = ctx().chat) {
+    const skipSystem = !!settings().skipSystemMessages;
+    const list = chat || [];
+    for (let i = list.length - 1; i >= 0; i--) {
+        const message = list[i];
+        if (!isCountableMessage(message, skipSystem)) {
+            continue;
+        }
+        return message;
+    }
+    return null;
+}
+
+/**
+ * Clone a message for the new chat while preserving speaker and basic media.
+ * @param {any} message
+ * @returns {any|null}
+ */
+function buildCarryoverMessage(message) {
+    if (!message?.mes || !String(message.mes).trim()) {
+        return null;
+    }
+
+    const context = ctx();
+    const character = context.characters?.[context.characterId];
+    const isUser = !!message.is_user;
+    const extra = {
+        type: message.extra?.type || 'generic',
+        compressor: true,
+        compressorCarryover: true,
+        swipeable: false,
+    };
+
+    if (message.extra?.image) {
+        extra.image = message.extra.image;
+    }
+    if (Array.isArray(message.extra?.inline_images) && message.extra.inline_images.length) {
+        extra.inline_images = [...message.extra.inline_images];
+    }
+
+    return {
+        name: message.name
+            || (isUser ? (context.name1 || 'User') : (character?.name || 'Character')),
+        is_user: isUser,
+        is_system: false,
+        force_avatar: isUser
+            ? (message.force_avatar || undefined)
+            : (message.force_avatar || character?.avatar || undefined),
+        send_date: new Date().toLocaleString(),
+        mes: String(message.mes).trim(),
+        extra,
+    };
+}
+
+/**
+ * @param {string} chronologyText
+ * @param {string} sourceChat
+ * @param {any|null} [carryoverSource] Last message from the old chat
+ */
+async function injectChronologyAfterGreeting(chronologyText, sourceChat, carryoverSource = null) {
     const context = ctx();
     await waitUntil(() => context.chat.length >= 1, 10000, 50);
 
@@ -1046,9 +1110,15 @@ async function injectChronologyAfterGreeting(chronologyText, sourceChat) {
         return;
     }
 
-    const message = buildChronologyMessage(chronologyText);
-    context.chat.push(message);
-    context.addOneMessage(message);
+    const chronologyMessage = buildChronologyMessage(chronologyText);
+    context.chat.push(chronologyMessage);
+    context.addOneMessage(chronologyMessage);
+
+    const carryoverMessage = buildCarryoverMessage(carryoverSource);
+    if (carryoverMessage) {
+        context.chat.push(carryoverMessage);
+        context.addOneMessage(carryoverMessage);
+    }
 
     context.chatMetadata[METADATA_KEY] = {
         sourceChat: sourceChat || '',
@@ -1113,6 +1183,7 @@ async function compressChat(options = {}) {
         const characterKey = getCharacterKey(context);
         const sourceChat = context.getCurrentChatId?.() || context.chatId || '';
         const transcript = buildTranscript(context.chat, !!settings().skipSystemMessages);
+        const carryoverSource = getLastCarryoverMessage(context.chat);
 
         if (!transcript.trim()) {
             toastr.error('No messages to summarize');
@@ -1166,7 +1237,7 @@ async function compressChat(options = {}) {
         }
 
         await startNewChat(deleteOld);
-        await injectChronologyAfterGreeting(chronology, sourceChat);
+        await injectChronologyAfterGreeting(chronology, sourceChat, carryoverSource);
         await refreshFactsInjection();
 
         toastr.success('Chat compressed into a new conversation', 'Chat Compressor');
@@ -1448,7 +1519,7 @@ function registerSlashCommand() {
             <div>
                 Assembles the chronology fact pool into a timeline (editable popup),
                 optionally updates persistent user facts, and starts a new chat.
-                The character greeting stays first; chronology is added as a visible second message.
+                Order: character greeting, chronology, then the last message from the old chat.
                 You will be asked whether to delete the old chat.
             </div>
         `,
